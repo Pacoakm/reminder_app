@@ -1,0 +1,10 @@
+streamlit
+streamlit-authenticator>=0.3.3
+mysql-connector-python
+pandas
+python-dotenv
+streamlit-cookies-controller
+PyJWT
+bcrypt
+flask
+flask-cors
