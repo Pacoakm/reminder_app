@@ -88,20 +88,14 @@ git clone https://github.com/Pacoakm/reminder_app.git
 cd reminder_app
 python -m venv env
 source env/bin/activate          # Windows: env\Scripts\activate
-pip install streamlit \
-            streamlit-authenticator \
-            mysql-connector-python \
-            pandas \
-            python-dotenv \
-            streamlit-cookies-controller \
-            PyJWT \
-            flask \
-            flask-cors
+pip install -r requirements.txt
 ```
 
-(`test2.py` additionally references `bcrypt`, and `pages/register.py` references `requests` and `hashlib` — both are in the stdlib / commonly installed.)
+The requirements file pins `streamlit-authenticator>=0.3.3` and includes `bcrypt`.
 
-> There is no `requirements.txt` in the repo, so copy the command above into one and `pip install -r requirements.txt` going forward.
+If you prefer to install by hand, the dependencies are:
+
+`streamlit`, `streamlit-authenticator>=0.3.3`, `mysql-connector-python`, `pandas`, `python-dotenv`, `streamlit-cookies-controller`, `PyJWT`, `bcrypt`, `flask`, `flask-cors`.
 
 ## Configuration
 
@@ -165,13 +159,22 @@ REST endpoints (all return JSON). Default port is `5000`:
 
 ## Security & known issues (read before deploying)
 
-The codebase is a working SBA project; for production use the following should be tightened:
+The codebase is an SBA project. The most pressing security items have been fixed; the remaining list is for future hardening before any real deployment.
 
-1. **Passwords are stored in plain SHA-256** (`pages/register.py` `hash_password`). There is no salt and no work factor. Use `bcrypt` / `argon2` instead — `api.py` already imports `bcrypt` for the `/login` check but is not wired into registration.
-2. **SQL injection risk in `backend.py`.** `add_user`, `add_task`, `add_category`, `get_tasks`, `get_all_category`, `get_category`, `get_cid`, `delete_completed`, `delete_category`, `update_task` use f-string interpolation. The `api.py` copy uses parameterized queries — keep `backend.py` aligned with that style.
-3. **`streamlit-authenticator` API drift.** `auth.py` does `name, authentication_status, username = authenticator.login()`, which is the pre-0.3 tuple-returning signature. On modern `streamlit-authenticator` (≥ 0.3.x) `login()` returns `None` and pushes the values into `st.session_state`. Pin the package or migrate to the new API.
-4. **CAPTCHA is a stub.** `pages/register.py` defines `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` placeholders but never validates a Cloudflare Turnstile token. Wire it up to `https://challenges.cloudflare.com/turnstile/v0/siteverify` if you want bot protection.
-5. **Login page has no input sanitisation.** `username = st.text_input(...)` is passed straight into SQL — see point 2.
+**Fixed in the current revision:**
+
+- ✅ **Passwords** are hashed with bcrypt (`bcrypt.hashpw(..., bcrypt.gensalt())`) in both `pages/register.py` and the inline `change_pw` dialog inside `pages/list_task.py`. The previous plain SHA-256 (no salt) was equivalent to plaintext.
+- ✅ **SQL queries in `backend.py`** are now parameterised (`%s` placeholders) for `add_user`, `add_task`, `add_category`, `get_tasks`, `get_all_category`, `get_category`, `get_cid`, `delete_completed`, `delete_category`, `update_task` — matching the style already used in `api.py`.
+- ✅ **`streamlit-authenticator`** is migrated to the 0.3+ session-state API. `auth.py` no longer unpacks `name, authentication_status, username`; it reads them from `st.session_state`. Pinned in `requirements.txt` as `streamlit-authenticator>=0.3.3`.
+
+**Remaining / future work:**
+
+1. **Legacy password migration.** Existing users in the `user` table still have SHA-256 hashes; they can't log in with bcrypt. Add a one-shot migration script (verify a legacy hash against the password, then `update_user_password` with bcrypt) or wipe the table and re-seed.
+2. **CAPTCHA.** Removed the unused Turnstile placeholder keys from `pages/register.py`. If you want bot protection, wire up Cloudflare Turnstile (or hCaptcha) by calling `https://challenges.cloudflare.com/turnstile/v0/siteverify` with `secret` + `response` (the user's submitted token) inside the `register()` form.
+3. **Existing user `password` column size.** VARCHAR(255) comfortably fits a bcrypt hash, but the migration comment in point 1 should sanity-check it.
+4. **`api.py /login` only does byte-equality.** It compares `password.encode('utf-8') == user['password'].encode('utf-8')` and does not use `bcrypt.checkpw`. Replace with `bcrypt.checkpw(password.encode(), user['password'].encode())` to actually verify the bcrypt hash.
+5. **No CSRF / rate-limiting** on the Flask endpoints. Add Flask-Limiter + CSRF protection before exposing `/login` and `/update_user_password` publicly.
+6. **No authorisation checks in `api.py`.** `/get_tasks/<username>`, `/delete_completed/<username>` etc. accept any username — a caller only needs to know the username to read or wipe that user's tasks. Either require a Bearer token / signed cookie to match the username, or change the routes to take a JWT.
 
 ## Tests in the repo
 
@@ -182,9 +185,9 @@ Neither is wired into a CI system.
 
 ## Possible next steps
 
-- Add `requirements.txt` + `pip install -r` instructions in CI
-- Replace SHA-256 with bcrypt / argon2 and add a salt column
-- Parameterise all queries in `backend.py`
+- Backfill bcrypt for any existing user rows (see **Legacy password migration** above)
 - Wire Turnstile (or hCaptcha) verification into registration
-- Add `streamlit run api.py`-style integration tests against a Dockerised MySQL
-- Schedule recurring reminders (the `add_date`/`due_date` columns exist but no notification path is implemented yet)
+- Replace `api.py /login`'s byte-equality check with `bcrypt.checkpw` and add per-user authorisation on the other Flask routes
+- Add Flask-Limiter and a smoke-test workflow (`docker compose up mysql`, then hit the endpoints) in CI
+- Schedule recurring reminders (the `add_date` / `due_date` columns exist but no notification path is implemented yet)
+- Replace the raw `pytesseract`-style password rule with a sensible `password_strength` estimator (e.g. zxcvbn)
